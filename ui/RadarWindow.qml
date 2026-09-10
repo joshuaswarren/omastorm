@@ -581,7 +581,7 @@ Item {
             RowLayout {
                 id: siteRow
                 Layout.fillWidth: true
-                // MOCK: the station title is the radar control. Click it to
+// MOCK: the station title is the radar control. Click it to
                 // pick a station; the padlock beside it pins that radar (not
                 // the map — the crosshair on the map is place-follow).
                 // No border or hover fill on the title — it reads as text.
