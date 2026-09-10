@@ -93,7 +93,7 @@ if step build bash scripts/cargo.sh test --offline --locked --no-run; then
   export OMASTORM_ARCHIVE="$PWD/data/raw/KTLX20130520_201643_V06.gz"
   tests & lanes+=($!)
   # check-picker and check-keys select stations for real, so they run last.
-  lane window check-engine-ui check-map-sites check-map-network check-location check-picker check-keys & lanes+=($!)
+lane window check-engine-ui check-map-sites check-map-network check-location check-export check-picker check-keys & lanes+=($!)
   lane alone check-ip-location check-bind check-link-plugin check-launcher check-theme check-map-tiles test-engine-pin check-engine-release check-popover check-reconnect & lanes+=($!)
   for pid in "${lanes[@]}"; do wait "$pid" || failed=1; done
   lanes=()
