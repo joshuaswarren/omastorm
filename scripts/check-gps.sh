@@ -5,8 +5,11 @@
 # the map there, names GPS as the source and hands the radar off to KFWS;
 # a fix in Oklahoma City hands off to KTLX; a parked receiver's jitter
 # moves nothing; a lock holds the radar while the map still follows; a
-# lost fix leaves the view where it was. Run through check.sh's window
-# lane, whose scratch daemon it leaves on KTLX.
+# lost fix leaves the view where it was; the crosshair chip on the map
+# pauses follow when clicked and resumes it from the last fix; turning
+# the key off hides the chip; turning it back on clears any pause that
+# carried over. Run through check.sh's window lane, whose scratch daemon
+# it leaves on KTLX.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 check_dir="$PWD/target/check-gps"
@@ -38,22 +41,31 @@ fail() { printf '%s\n' "$@" >&2; cat "$check_dir/log" >&2; exit 1; }
 expect() { [[ "$3" == "$2" ]] || fail "$1" "Expected: $2" "Actual:   $3"; }
 near() { awk -v a="$1" -v b="$2" 'BEGIN { d = a - b; exit !(d < .002 && d > -.002) }'; }
 until_field() { # name, wanted
-  for attempt in {1..150}; do [[ $(field "$1") == "$2" ]] && return; sleep .1; done
+  for _ in {1..150}; do [[ $(field "$1") == "$2" ]] && return; sleep .1; done
   fail "$1 never became $2: $(call status)"
 }
 fix() { printf '{"class":"TPV","mode":3,"lat":%s,"lon":%s}\n' "$1" "$2" >> "$check_dir/fixes.txt"; }
-for attempt in {1..100}; do call status > /dev/null 2>&1 && break; sleep .1; done
+nofix() { printf '{"class":"TPV","mode":1}\n' >> "$check_dir/fixes.txt"; }
+for _ in {1..100}; do call status > /dev/null 2>&1 && break; sleep .1; done
 call status > /dev/null || fail "The window's keys IPC never answered"
 
-# No fix yet: the weather location places the view, as without gpsd.
+# gpsd = true with no fix yet: the crosshair chip is visible and dimmed
+# with NO FIX — the receiver is silent, the weather location still places
+# the view, the nearest radar at Stokesdale is still KFCX.
+until_field gpsEnabled true
+until_field gpsNoFix true
 until_field locationSource weather
 until_field site KFCX
 
-# A Dallas fix: the map centres on it, GPS is the source, KFWS takes over.
+# A Dallas fix: the chip fills, GPS is the source, KFWS takes over.
 fix 32.99 -96.60
+until_field gpsNoFix false
+until_field gpsFollowing true
 until_field locationSource gps
 until_field site KFWS
-near "$(field lat)" 32.99 && near "$(field lon)" -96.60 || fail "The map did not centre on the fix: $(field lat) $(field lon)"
+if ! near "$(field lat)" 32.99 || ! near "$(field lon)" -96.60; then
+  fail "The map did not centre on the fix: $(field lat) $(field lon)"
+fi
 
 # Driving to Oklahoma City hands off to KTLX.
 fix 35.47 -97.33
@@ -76,10 +88,50 @@ call run lock
 until_field locked false
 until_field site KFWS
 
-# Losing the fix leaves the view where the receiver last was.
-printf '{"class":"TPV","mode":1}\n' >> "$check_dir/fixes.txt"
+# Click the crosshair chip: follow is paused, the next fix that has moved
+# does not snap back. The lat / lon stay where the user paused them.
+call run follow
+until_field gpsPaused true
+until_field gpsFollowing false
+fix 36.00 -97.50
 sleep 3
-near "$(field lat)" 33.00 || fail "A lost fix moved the map: $(field lat)"
+near "$(field lat)" 33.00 || fail "A paused follow still snapped to a fix: $(field lat)"
+
+# Click the chip again: the next fix that has moved re-centres.
+call run follow
+until_field gpsPaused false
+until_field gpsFollowing true
+fix 36.20 -97.70
+sleep 3
+near "$(field lat)" 36.20 || fail "A resumed follow did not re-centre on a fix: $(field lat)"
+
+# Loss of fix: NO FIX stands beside the chip; the view stays put.
+nofix
+sleep 3
+until_field gpsNoFix true
+near "$(field lat)" 36.20 || fail "A lost fix moved the map: $(field lat)"
+# A fix that has not moved enough while NO FIX stands does not snap.
+fix 36.20 -97.7001
+sleep 2
+expect 'NO FIX held the view until a fix moved past 100 m' "$(field lat)" "36.2"
+
+# Turning gpsd off in the config file hides the chip, clears the fix, and
+# leaves the view where it was.
+printf '\n' > "$check_dir/fixes.txt"
+printf 'gpsd = false\n' > "$check_dir/config.toml"
+for _ in {1..100}; do [[ $(field gpsEnabled) == "false" ]] && break; sleep .1; done
+expect 'gpsd = false hid the chip' "$(field gpsEnabled)" "false"
+expect 'gpsd = false leaves no fix to track' "$(field gpsNoFix)" "false"
+
+# gpsd back on with no fix yet: the chip returns in its NO FIX shape.
+printf 'gpsd = true\n' > "$check_dir/config.toml"
+until_field gpsEnabled true
+until_field gpsNoFix true
+
+# A fix arrives again: the chip fills, no pause carried over.
+fix 36.20 -97.70
+until_field gpsFollowing true
+until_field locationSource gps
 
 if rg -q 'TypeError|ReferenceError|Unable to assign|is not a function' "$check_dir/log"; then fail "QML errors in the log"; fi
 echo "GPS_PASSED"

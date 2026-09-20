@@ -151,11 +151,21 @@ on launch.
 A GPS receiver is a map centre that moves on its own. With `gpsd = true`,
 each fix from the local gpsd that has moved more than 100 m becomes the
 centre, and the radar follows it by the same nearest-with-hysteresis
-hand-off a pan gets; the chip reads `FOLLOWING · GPS`. A lock still holds
-the radar while the map follows. The fix is remembered like any centre, so
-a relaunch opens where the receiver last was, and a lost fix moves
-nothing. Nothing is drawn at the fix: a position marker is its own
+hand-off a pan gets. The crosshair on the map is the GPS follow chip:
+filled while a fix is steering the camera, outlined while a pan has
+paused it, and outlined dimmed with `NO FIX` while the receiver has
+nothing to report. Click to pause and resume; `gpsd = false` in the
+config turns GPS follow off entirely and hides the chip. A lock still
+holds the radar while the map follows. The fix is remembered like any
+centre, so a relaunch opens where the receiver last was, and a lost fix
+moves nothing. Nothing is drawn at the fix: a position marker is its own
 decision, against the overlay's collision layout.
+
+`gpsd = true` is *follow after we already have a view*, not a fifth
+location source in launch order. Explicit `center_lat` / `center_lon`
+still win on every launch, Omarchy's own remembered location wins on top
+of that, and a pan or picker choice is remembered state — GPS rides the
+same path afterwards, until it is paused or the key turns off.
 
 A station with no frame yet is the map without radar. Show no loading animation.
 Display one radar station’s sweep at a time.
