@@ -4,12 +4,12 @@
 # streams gpsd JSON, and the map follows each fix — a Dallas fix centres
 # the map there, names GPS as the source and hands the radar off to KFWS;
 # a fix in Oklahoma City hands off to KTLX; a parked receiver's jitter
-# moves nothing; a lock holds the radar while the map still follows; a
-# lost fix leaves the view where it was; the crosshair chip on the map
-# pauses follow when clicked and resumes it from the last fix; turning
-# the key off hides the chip; turning it back on clears any pause that
-# carried over. Run through check.sh's window lane, whose scratch daemon
-# it leaves on KTLX.
+# moves nothing; a user pan pauses follow; the crosshair chip pauses and
+# resumes; a lock holds the radar while the map still follows; a lost fix
+# leaves the view where it was; an explicit config centre outranks the
+# remembered fix; turning the key off hides the chip; turning it back on
+# clears any pause that carried over. Run through check.sh's window lane,
+# whose scratch daemon it leaves near Oklahoma City.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 check_dir="$PWD/target/check-gps"
@@ -77,7 +77,24 @@ fix 35.4703 -97.3302
 sleep 2
 expect 'Jitter left the centre alone' "$(field lat)" "35.47"
 
-# A lock holds the radar while the map keeps following.
+# A user pan pauses follow: the camera stays where the pan left it, and
+# the next fix that has moved does not snap it back.
+call run pan_left
+until_field gpsPaused true
+fix 33.00 -96.60
+sleep 3
+near "$(field lat)" 35.47 || fail "A panned follow still snapped to a fix: $(field lat)"
+
+# Clicking the chip resumes: the held fix re-centres right away.
+call run follow
+until_field gpsPaused false
+until_field gpsFollowing true
+sleep 3
+near "$(field lat)" 33.00 || fail "A resumed follow did not re-centre: $(field lat)"
+
+# Back to Oklahoma City for the lock: it must hold through a Dallas fix.
+fix 35.47 -97.33
+until_field site KTLX
 call run lock
 until_field locked true
 fix 33.00 -96.60
@@ -115,9 +132,18 @@ fix 36.20 -97.7001
 sleep 2
 expect 'NO FIX held the view until a fix moved past 100 m' "$(field lat)" "36.2"
 
+# An explicit centre in config.toml wins: the view re-centres there, GPS
+# names no source, and a small fix beside it does not drag the camera.
+printf 'gpsd = true\ncenter_lat = 32.99\ncenter_lon = -96.60\n' > "$check_dir/config.toml"
+until_field locationSource config
+near "$(field lat)" 32.99 || fail "The explicit centre did not win: $(field lat)"
+until_field site KFWS
+fix 32.9901 -96.6001
+sleep 3
+expect 'A small fix did not drag an explicit centre' "$(field lat)" "32.99"
+
 # Turning gpsd off in the config file hides the chip, clears the fix, and
 # leaves the view where it was.
-printf '\n' > "$check_dir/fixes.txt"
 printf 'gpsd = false\n' > "$check_dir/config.toml"
 for _ in {1..100}; do [[ $(field gpsEnabled) == "false" ]] && break; sleep .1; done
 expect 'gpsd = false hid the chip' "$(field gpsEnabled)" "false"
@@ -128,10 +154,12 @@ printf 'gpsd = true\n' > "$check_dir/config.toml"
 until_field gpsEnabled true
 until_field gpsNoFix true
 
-# A fix arrives again: the chip fills, no pause carried over.
-fix 36.20 -97.70
+# A fix arrives again — far enough to matter: the chip fills, no pause
+# carried over, GPS names the source.
+fix 36.30 -97.80
 until_field gpsFollowing true
 until_field locationSource gps
+near "$(field lat)" 36.30 || fail "A resumed receiver did not follow its fix: $(field lat)"
 
 if rg -q 'TypeError|ReferenceError|Unable to assign|is not a function' "$check_dir/log"; then fail "QML errors in the log"; fi
 echo "GPS_PASSED"

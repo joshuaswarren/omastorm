@@ -7,16 +7,20 @@ pinning a version that can become stale.
 
 ## Assets
 
-`media/{window,window-light,hero,search-city,treatments}.png` are committed
+`media/{window,window-light,hero,search-city,treatments,aviation-window,aviation-popover}.png`
+are committed
 copies of the corresponding README screenshots in `docs/media/readme/`.
 Refresh both sets when the interface changes. Dark Tokyo Night and light
 Flexoki Light window stills lead the page side by side, stacking on mobile.
-The window/popover hero, search, and treatment stills illustrate the guide.
+The window/popover hero, search, treatment, and aviation stills illustrate the guide.
 The hero is also the Open Graph sharing image.
+`media/omastorm-europe.png` mirrors the Europe demo poster from
+`docs/media/readme/omastorm-europe.png` and shows OPERA coverage over Warsaw.
 
-The site uses still images only. Every required image is committed; no video
-capture or generated media is needed for deployment. Cloudflare Pages caps
-each file at 25 MiB.
+The Europe demo plays on demand from the `v0.1.14` GitHub Release; it does
+not autoplay. Its poster and every other required image are committed. No
+local video or generated media is needed for deployment. Cloudflare Pages
+caps each file at 25 MiB.
 
 The favicon and touch icons come from `branding/mark`; the header uses the
 same monochrome mark as the app. The page follows the visitor’s color scheme. The page uses JetBrains Mono throughout. Treatment names are HTML labels
