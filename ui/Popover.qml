@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "Keys.js" as KeyMap
+import "Metar.js" as Metar
 
 FocusScope {
     id: card
@@ -20,7 +21,7 @@ FocusScope {
         return result;
     }
     readonly property int currentSlot: scan ? slots.findIndex(s => s.id === scan.id) : -1
-    readonly property string condition: state ? state.source === "archived" ? "archived" : state.connection.status : "offline"
+    readonly property string condition: state ? state.mode === "archived" ? "archived" : state.connection.status : "offline"
     readonly property color statusColor: condition === "stale" ? theme.yellow
         : condition === "offline" || condition === "unavailable" ? theme.red : theme.accent
     readonly property string statusText: {
@@ -28,7 +29,7 @@ FocusScope {
         if (condition === "archived") return "ARCHIVED";
         var label = condition === "ok" ? "LIVE" : condition.toUpperCase();
         var complete = frames.filter(f => f.status === "complete");
-        if (!scan.scanTime || !complete.length) return label;
+        if (!scan || !scan.scanTime || !complete.length) return label;
         var age = Math.max(0, state.connection.ageSeconds +
             Math.round((Date.parse(complete[complete.length - 1].scanTime) - Date.parse(scan.scanTime)) / 1000));
         var minutes = Math.floor(age / 60);
@@ -43,8 +44,52 @@ FocusScope {
     // settling after open made the panel shrink and grow.
     implicitHeight: 372
     Engine { id: connection }
+    property var metars: []
+    property var selectedMetar: null
     function step(delta) { if (state) connection.send({type: "step", delta: delta}); }
     function play() { if (state) connection.send({type: state.playing ? "pause" : "play"}); }
+    function toggleMetar() {
+        if (!Metar.available(state, connection.site, connection.source)) return;
+        session.metarEnabled = !session.metarEnabled;
+    }
+    function requestMetars() {
+        if (!Metar.shouldQuery(state, session.metarEnabled, connection.site, connection.source)) {
+            if (!session.metarEnabled) selectedMetar = null;
+            else { metars = []; selectedMetar = null; }
+            return;
+        }
+        connection.send(Metar.command(connection.site, map.viewBbox(), session.config.values));
+    }
+    readonly property string siteId: connection.selectedSiteId
+    onSiteIdChanged: { metars = []; selectedMetar = null; requestMetars(); }
+    onStateChanged: {
+        if (!Metar.available(state, connection.site, connection.source)) {
+            metars = [];
+            selectedMetar = null;
+        }
+    }
+    Connections {
+        target: session
+        function onMetarEnabledChanged() {
+            if (!card.session.metarEnabled) { card.selectedMetar = null; return; }
+            if (card.metars.length) return;
+            card.requestMetars();
+        }
+    }
+    Connections {
+        target: card.session.config
+        function onValuesChanged() { if (card.session.metarEnabled) card.requestMetars(); }
+    }
+    Connections {
+        target: connection
+        function onMetarsReady(message) { card.metars = message.results || []; }
+    }
+    Timer {
+        interval: 600000
+        repeat: true
+        running: session.metarEnabled && Metar.available(state, connection.site, connection.source)
+        onTriggered: card.requestMetars()
+    }
     // Respect the same config keys as the window; Enter always expands.
     Shortcut { id: probe; enabled: false }
     function canon(sequence) { probe.sequence = sequence; return probe.portableText; }
@@ -53,14 +98,17 @@ FocusScope {
     Component.onCompleted: applyKeys()
     Connections { target: card.session.config; function onKeysChanged() { card.applyKeys(); } }
     Instantiator {
-        model: ["previous_frame", "next_frame", "play", "close"]
+        model: ["previous_frame", "next_frame", "play", "aviation", "close"]
         delegate: Shortcut {
             required property string modelData
             sequences: card.bindings[modelData] || []
             enabled: card.visible
             onActivated: {
-                if (modelData === "close") card.closeRequested();
-                else if (modelData === "play") card.play();
+                if (modelData === "close") {
+                    if (card.selectedMetar) card.selectedMetar = null;
+                    else card.closeRequested();
+                } else if (modelData === "play") card.play();
+                else if (modelData === "aviation") card.toggleMetar();
                 else card.step(modelData === "previous_frame" ? -1 : 1);
             }
         }
@@ -100,8 +148,8 @@ FocusScope {
         RowLayout {
             Layout.fillWidth: true
             spacing: 6
-            Label { text: card.state ? card.state.site.id : "—"; font.bold: true; font.pixelSize: 14 }
-            Label { Layout.fillWidth: true; text: connection.site ? connection.site.name : ""; opacity: .65 }
+            Label { text: connection.selectedSiteId || (connection.source ? connection.source.id : "—"); font.bold: true; font.pixelSize: 14 }
+            Label { Layout.fillWidth: true; text: connection.site ? connection.site.name : (connection.source ? connection.source.name : ""); opacity: .65 }
             Rectangle { width: 5; height: 5; radius: 3; color: card.statusColor }
             Label { text: card.statusText; color: card.statusColor; font.pixelSize: 11 }
         }
@@ -117,16 +165,24 @@ FocusScope {
                 scan: card.scan
                 texture: connection.texture
                 azimuthLut: connection.azimuthLut
-                siteId: card.state ? card.state.site.id : ""
+                siteId: connection.selectedSiteId
+                sourceId: connection.source ? connection.source.id : ""
                 sites: connection.sites
+                coverage: connection.site && connection.site.coverage ? connection.site.coverage
+                    : (connection.source && connection.source.coverage ? connection.source.coverage : null)
                 tileRoot: "file://" + connection.runtime
                 theme: card.theme
+                metarMode: card.session.metarEnabled && Metar.available(card.state, connection.site, connection.source) && card.metars.length > 0
+                metars: card.metars
+                metarMark: Metar.markFromConfig(card.session.config.values) || "chip"
+                onMetarPicked: report => card.selectedMetar = report
                 treatment: card.session.treatment
                 weakFloor: card.session.weakFloor
                 labelSize: 10
                 radarOpacity: card.condition === "unavailable" ? .6 : 1
                 interactive: !card.session.needsLocation
                 onNavigated: (lat, lon, spanKm) => card.session.userNavigated(lat, lon, spanKm)
+                onViewSettled: (lat, lon) => card.requestMetars()
                 onTilesNeeded: (z, x0, y0, x1, y1) => connection.send({type: "tiles_needed", z: z, x0: x0, y0: y0, x1: x1, y1: y1})
                 function applyView() {
                     if (!card.session.hasView) return;
@@ -138,6 +194,29 @@ FocusScope {
                 Component.onCompleted: applyView()
             }
             Connections { target: connection; function onTileReady(tile) { map.tileReady(tile); } }
+            Rectangle {
+                visible: !!card.selectedMetar
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.rightMargin: 8
+                anchors.bottomMargin: 32
+                width: Math.round(parent.width * 0.8)
+                height: popoverMetarText.implicitHeight + 20
+                color: Qt.alpha(card.theme.background, .95)
+                border.width: 1
+                border.color: Qt.alpha(card.theme.foreground, .22)
+                Label {
+                    id: popoverMetarText
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 6
+                    wrapMode: Text.Wrap
+                    font.family: "monospace"
+                    font.pixelSize: 10
+                    text: card.selectedMetar ? card.selectedMetar.raw : ""
+                }
+            }
             Connections {
                 target: card.session
                 function onViewChanged() { map.applyView(); }
@@ -149,7 +228,8 @@ FocusScope {
                     implicitWidth: product.implicitWidth + 10; implicitHeight: 20
                     color: Qt.alpha(card.theme.background, .92)
                     Label { id: product; anchors.centerIn: parent; font.pixelSize: 10; opacity: .8
-                        text: card.scan ? card.scan.productName.toUpperCase() + " " + card.scan.elevationDeg.toFixed(1) + "°" : "" }
+                        text: card.scan ? card.scan.productName.toUpperCase()
+                            + (card.scan.kind !== "mosaic" && card.scan.scanTime ? " " + card.scan.elevationDeg.toFixed(1) + "°" : "") : "" }
                 }
                 Item { Layout.fillWidth: true }
                 Rectangle {
@@ -178,6 +258,22 @@ FocusScope {
                 border.color: card.theme.accent
                 Label { id: updated; anchors.centerIn: parent; font.pixelSize: 10; color: card.theme.accent; text: card.session.updateNotice }
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: card.session.restartShell() }
+            }
+            Rectangle {
+                anchors.centerIn: parent
+                visible: card.condition === "loading" && (!card.scan || !card.scan.scanTime) && !!card.state
+                implicitWidth: popLoad.implicitWidth + 20
+                implicitHeight: 24
+                color: Qt.alpha(card.theme.background, .88)
+                border.width: 1
+                border.color: Qt.alpha(card.theme.foreground, .22)
+                Label {
+                    id: popLoad
+                    anchors.centerIn: parent
+                    text: "Loading..."
+                    color: card.theme.accent
+                    font.pixelSize: 10
+                }
             }
             Label {
                 anchors.centerIn: parent; width: parent.width - 24; wrapMode: Text.Wrap
@@ -253,7 +349,8 @@ FocusScope {
             font.pixelSize: 8
             opacity: .5
             elide: Text.ElideRight
-            text: map.osmOnScreen ? "NOAA · © OpenStreetMap" : "NOAA · Natural Earth"
+            text: map.osmOnScreen ? (connection.source ? connection.source.attribution : "NOAA") + " · © OpenStreetMap"
+                : (connection.source ? connection.source.attribution : "NOAA") + " · Natural Earth"
         }
     }
 }

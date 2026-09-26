@@ -19,7 +19,7 @@ QtObject {
     readonly property var lat: parsed.lat
     readonly property var lon: parsed.lon
     readonly property var span: parsed.span
-    readonly property string lock: parsed.lock
+    readonly property var lock: parsed.lock
     readonly property string name: parsed.name
     // The trio we last wrote on disk via `overlay`, so a sweep identical to
     // it can be skipped. Reset by every `snapshot` so a fresh view lands on

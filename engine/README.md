@@ -6,9 +6,12 @@ versioning are in [docs/RELEASING.md](../docs/RELEASING.md).
 ## Architecture
 
 The binary embeds Natural Earth geography, `data/sites.json`, and
-`data/fixture.json` (the product, palette, and frame template). It embeds no
-archived radar. A daemon starts with no station; `select_site` starts live
-polling. An `OMASTORM_ARCHIVE` scan is decoded at startup and labeled archived.
+`data/product.json` (the product, palette, and frame template). It embeds no
+archived radar. Compiled radar sources live in `src/source.rs`: PolarFamily
+NEXRAD and each GridFamily mosaic (OPERA today) are registry entries. A
+daemon starts with no selection; `select_site` or `select_source` starts
+the matching poller. An `OMASTORM_ARCHIVE` scan is decoded at startup and
+labeled archived.
 Missing build data
 produces an error naming `scripts/extract-fixtures.sh`; vendored archives and checksums
 are described in [data/README.md](../data/README.md).
@@ -38,7 +41,7 @@ The grace period starts when observed, so a restart preserves recently served
 textures. Transport, commands, state, and texture encoding are defined in
 [docs/protocol.md](../docs/protocol.md).
 
-## Radar
+## NEXRAD
 
 `src/sweep.rs` decodes Level II with the pinned `nexrad-data`, `nexrad-decode`,
 and `nexrad-model` dependencies. It reads through the lowest cut, sorts rays
@@ -88,12 +91,51 @@ The station table's source, retrieval date, and caveats are in `data/sites.json`
 and hello. It includes archived and test sites; membership does not imply live
 availability. An archived scan retains its measured coordinates.
 
+## European mosaic
+
+`src/opera.rs` fetches EUMETNET OPERA maximum-reflectivity composites from
+Open Radar Data's public 24-hour cache. It lists COMP DBZH GeoTIFF objects,
+loads the newest frame, and backfills earlier frames. History is capped at
+12 frames. `src/cog.rs` decodes the raster; the UI samples its native grid.
+Mosaic frames are complete images, with no polar sweep or elevation selector.
+Source selection and the grid contract are in
+[docs/grid-adapters.md](../docs/grid-adapters.md).
+
+## METAR
+
+`src/metar.rs` answers `metar_query` with airport observations around the
+given lat/lon (the selected radar). NOAA/NWS Aviation Weather Center JSON
+is fetched with the same bounded HTTP pattern as OSM tiles (timeout, body
+cap, User-Agent, four in flight, 30-second backoff after a 429, a 5xx, or
+a transport failure). Coverage is US, Canada, Hawaii, Guam, and Puerto
+Rico / USVI, not the coarse NEXRAD clip (RKJK and LPLA do not fetch). A
+query whose radar sits outside that area (OPERA Europe) is a no-op: empty
+`metars`, no fetch. A newer query from the same client drops an older
+reply. Results keep ICAO `K`, `C`, `P`, `TI`, `TJ`, and `M`. The default
+is the nearest stations, at most 16, inside a 250 km circle. Optional
+`pick=priority` ranks AWC `stationinfo` priority (1 is a hub) inside the
+view box the UI sends; a stationinfo failure is a fetch failure. `limit`
+shrinks the pool; `always_on` pins listed ICAO ids first when they are in
+that pool. The reply keeps the raw METAR and FAA flight category only; a
+station with no category is omitted, so the UI draws no chip. It does not
+decode English. The fetched feed is cached for ten minutes and until the
+UTC hour rolls. A view box is fetched with a quarter-view margin, so a
+later query inside a cached box (a toggle, a slightly moved view) does not
+fetch; a wider one does. A backoff still serves the latest feed for that
+radar. Station priorities cache for a day. HTTP 204 is an
+empty result.
+`OMASTORM_METAR_URL` / `OMASTORM_METAR_FIXTURE` and
+`OMASTORM_STATIONS_URL` / `OMASTORM_STATIONS_FIXTURE` override the
+endpoints for checks. Nothing is fetched until a client asks. The UI never
+reads this cache. The engine never reads `config.toml`.
+
 ## Basemap
 
 `build.rs` converts Natural Earth lines to a compact polyline blob and embeds
 populated places for map labels. GeoNames cities with population ≥ 5000,
 clipped to the same envelope, are the location-picker gazetteer. The 1:50m
-set is global; the 1:10m set is clipped to the NEXRAD network envelope. `src/tiles.rs` rasterizes these with `tiny-skia`,
+set is global; the 1:10m set is clipped to the compiled live-source envelope
+(`src/envelope.rs`). `src/tiles.rs` rasterizes these with `tiny-skia`,
 using 1:50m below z5 and 1:10m from z5. Segments outside a tile are skipped.
 
 `src/osm.rs` serves OpenMapTiles vector data from z7 through z14, with Natural
@@ -118,7 +160,7 @@ The decoder tests compare every moment byte, ray angle, timestamp, and gate
 geometry with `golden/ktlx-20130520/`. Other tests cover partial sweep assembly,
 catalog retention, deterministic tile rendering, cache eviction, protocol
 validation, client isolation, daemon replacement, and texture retirement.
-Recorded vector-tile fixtures have provenance in `data/vt/tiles.json`.
+Recorded vector-tile fixtures have provenance in `tests/fixtures/vt/tiles.json`.
 
 The rendering check compares all three treatments against the shader's sampling
 rule replayed in Rust over golden codes. It checks default and zoomed views,

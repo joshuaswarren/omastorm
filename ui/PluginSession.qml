@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import "Location.js" as Location
 import "Keys.js" as KeyMap
+import "Metar.js" as Metar
 
 QtObject {
     id: session
@@ -16,6 +17,9 @@ QtObject {
     property bool windowOpen: false
     property bool initialized: false
     property string treatment: Quickshell.env("OMASTORM_STYLE") || "GLYPHS"
+    // Session aviation overlay; `[metar] show` seeds it, `a` toggles it,
+    // neither writes config.toml.
+    property bool metarEnabled: false
     // The weak-return floor in dBZ, or null for every measured return
     // (DESIGN.md, weak-return floor); config.toml's weak_floor and the `w`
     // key change it, OMASTORM_WEAK outranks the file for captures.
@@ -37,9 +41,10 @@ QtObject {
     property real centerLat: 0
     property real centerLon: 0
     property real span: Location.DEFAULT_SPAN
-    property string lockId: ""
+    property var lock: null
     property bool lockWanted: false
     property string lockSource: ""
+    readonly property string lockId: Location.lockSiteId(lock)
     property string lastConfigLock: ""
     property bool pendingLocationPicker: false
     property var appliedExplicit: null
@@ -81,7 +86,7 @@ QtObject {
     function requestApproximateLocation(kind) {
         kind = kind || "onboarding";
         if (!initialized || !ready || locationPending
-            || !engine.state || engine.state.source !== "live") return;
+            || !engine.state || engine.state.mode !== "live") return;
         if (kind === "onboarding" && (hasView || !needsLocation)) return;
         if (kind === "locate" && (!hasView || needsLocation)) return;
         locateAttempt += 1;
@@ -110,11 +115,12 @@ QtObject {
 
     function applyLocate(place) {
         if (!ready || !hasView || !place
-            || !engine.state || engine.state.source !== "live") {
+            || !engine.state || engine.state.mode !== "live") {
             locationPending = false;
             locateKind = "";
             return;
         }
+        span = Location.scaleSpan(centerLat, place.lat, span);
         centerLat = place.lat;
         centerLon = place.lon;
         placeName = place.name || "";
@@ -122,11 +128,11 @@ QtObject {
         hasView = true;
         var cfg = Location.configLock(config.values);
         if (cfg && lockSource === "config") {
-            lockId = cfg;
+            lock = Location.polarLock(cfg);
             lockWanted = true;
             lockSource = "config";
         } else {
-            lockId = "";
+            lock = null;
             lockWanted = false;
             lockSource = "nearest";
         }
@@ -143,7 +149,7 @@ QtObject {
             return;
         }
         if (!ready || hasView || ipLocationDismissed || !place
-            || !engine.state || engine.state.source !== "live") {
+            || !engine.state || engine.state.mode !== "live") {
             locationPending = false;
             locateKind = "";
             return;
@@ -269,15 +275,15 @@ QtObject {
         var cfg = Location.configLock(config.values);
         lastConfigLock = cfg;
         if (cfg) {
-            lockId = cfg;
+            lock = Location.polarLock(cfg);
             lockWanted = true;
             lockSource = "config";
         } else if (rememberedView && rememberedView.lock) {
-            lockId = rememberedView.lock;
-            lockWanted = true;
+            lock = Location.parseLock(rememberedView.lock);
+            lockWanted = !!lock;
             lockSource = "state";
         } else {
-            lockId = "";
+            lock = null;
             lockWanted = false;
             lockSource = "nearest";
         }
@@ -288,12 +294,12 @@ QtObject {
         if (cfg === lastConfigLock) return;
         lastConfigLock = cfg;
         if (cfg) {
-            lockId = cfg;
+            lock = Location.polarLock(cfg);
             lockWanted = true;
             lockSource = "config";
         } else {
-            lockId = remembered.lock || "";
-            lockWanted = !!lockId;
+            lock = Location.parseLock(remembered.lock);
+            lockWanted = !!lock;
             lockSource = lockWanted ? "state" : "nearest";
         }
     }
@@ -306,10 +312,10 @@ QtObject {
     // re-sending on reconnect. Config's locked_radar still outranks it.
     function adoptRememberedLock() {
         if (!ready || lockSource === "config") return;
-        var id = remembered.lock || "";
-        if (id === (lockWanted ? lockId : "")) return;
-        lockId = id;
-        lockWanted = !!id;
+        var next = Location.parseLock(remembered.lock);
+        if (Location.lockEquals(next, lockWanted ? lock : null)) return;
+        lock = next;
+        lockWanted = !!next;
         lockSource = lockWanted ? "state" : "nearest";
     }
     // What the engine shows now, for the view export (docs/configuration.md):
@@ -331,9 +337,37 @@ QtObject {
     // a no-op when the bar's process happens to see the same broadcast.
     onShownKeyChanged: if (initialized && hasView) remembered.overlay(shownSite, shownScan, shownLive)
 
+    // Same rule as the lock: state.json is the shared camera. A client that
+    // still has an older place in memory (a city search, then mise restart)
+    // must not push that centre back over the file or the other client.
+    function adoptRememberedView() {
+        if (!ready || !hasView) return;
+        if (Location.configCenter(config.values) || Location.envView(Quickshell.env("OMASTORM_VIEW")))
+            return;
+        var view = remembered.parsed;
+        if (!view || !Location.validPair(view.lat, view.lon)) return;
+        var nextSpan = Location.clampSpan(view.span);
+        var same = hasView
+            && Math.abs(centerLat - view.lat) < 1e-6
+            && Math.abs(centerLon - view.lon) < 1e-6
+            && span === nextSpan;
+        if (same) {
+            if (view.name && placeName !== view.name) placeName = view.name;
+            return;
+        }
+        centerLat = view.lat;
+        centerLon = view.lon;
+        span = nextSpan;
+        if (view.name) placeName = view.name;
+        hasView = true;
+        needsLocation = false;
+        if (locationSource !== "config") locationSource = "state";
+        viewChanged();
+    }
+
     function persist() {
         if (!hasView) return;
-        remembered.snapshot(centerLat, centerLon, span, lockWanted ? lockId : "", placeName, shownSite, shownScan, shownLive);
+        remembered.snapshot(centerLat, centerLon, span, lockWanted ? lock : null, placeName, shownSite, shownScan, shownLive);
     }
 
     function rememberView(lat, lon, spanKm) {
@@ -362,17 +396,17 @@ QtObject {
         locationSource = "state";
         needsLocation = false;
         pendingLocationPicker = false;
+        span = hasView ? Location.scaleSpan(centerLat, lat, span) : Location.DEFAULT_SPAN;
         centerLat = lat;
         centerLon = lon;
-        span = Location.DEFAULT_SPAN;
         hasView = true;
         var cfg = Location.configLock(config.values);
         if (cfg && lockSource === "config") {
-            lockId = cfg;
+            lock = Location.polarLock(cfg);
             lockWanted = true;
             lockSource = "config";
         } else {
-            lockId = "";
+            lock = null;
             lockWanted = false;
             lockSource = "nearest";
         }
@@ -399,19 +433,20 @@ QtObject {
         applyRadar();
     }
 
-    function chooseRadar(id, lat, lon, name) {
+    function chooseLock(lockObj, lat, lon, name) {
         lat = Number(lat);
         lon = Number(lon);
-        if (!id || !Location.validPair(lat, lon)) return;
+        if (!lockObj || !Location.validPair(lat, lon)) return;
         cancelIpLocation();
-        placeName = name || id;
+        placeName = name || Location.lockKey(lockObj);
         locationSource = "state";
         needsLocation = false;
         pendingLocationPicker = false;
+        span = hasView ? Location.scaleSpan(centerLat, lat, span) : Location.DEFAULT_SPAN;
         centerLat = lat;
         centerLon = lon;
         hasView = true;
-        lockId = id;
+        lock = lockObj;
         lockWanted = true;
         lockSource = "state";
         persist();
@@ -419,13 +454,21 @@ QtObject {
         applyRadar();
     }
 
-    function setLock(id, on) {
-        if (on && id) {
-            lockId = id;
-            lockWanted = true;
+    function chooseRadar(id, lat, lon, name) {
+        chooseLock(Location.polarLock(id), lat, lon, name);
+    }
+
+    function chooseMosaic(id, lat, lon, name) {
+        chooseLock(Location.mosaicLock(id), lat, lon, name);
+    }
+
+    function setLock(selection, on) {
+        if (on && selection) {
+            lock = Location.parseLock(selection) || Location.polarLock(selection);
+            lockWanted = !!lock;
             lockSource = "state";
         } else {
-            lockId = "";
+            lock = null;
             lockWanted = false;
             lockSource = "nearest";
         }
@@ -433,39 +476,59 @@ QtObject {
         applyRadar();
     }
 
+    function nav() {
+        return engine.state && engine.state.navigation ? engine.state.navigation : { follow: true, locked: false };
+    }
+    function currentSiteId() { return engine.selectedSiteId; }
+    function currentMode() { return engine.state ? engine.state.mode : ""; }
+
     function followNearest(id) {
-        lockId = "";
+        lock = null;
         lockWanted = false;
         lockSource = "nearest";
         persist();
         if (!engine.state) return;
-        if (engine.state.site.locked) engine.send({type: "lock", enabled: false});
-        if (!engine.state.site.follow) engine.send({type: "follow", enabled: true});
-        if (id && (engine.state.site.id !== id || engine.state.source !== "live"))
+        if (nav().locked) engine.send({type: "lock", enabled: false});
+        if (!nav().follow) engine.send({type: "follow", enabled: true});
+        if (hasView) engine.send({type: "view_center", lat: centerLat, lon: centerLon});
+        else if (id && (currentSiteId() !== id || currentMode() !== "live"))
             engine.send({type: "select_site", id: id});
     }
 
     function applyRadar() {
         if (!engine.state || !ready) return;
         if (needsLocation) return;
-        if (lockWanted && lockId) {
-            if (engine.state.site.id !== lockId || engine.state.source !== "live")
-                engine.send({type: "select_site", id: lockId});
-            if (!engine.state.site.locked) engine.send({type: "lock", enabled: true});
-            if (!engine.state.site.follow) engine.send({type: "follow", enabled: true});
+        var wanted = lockWanted ? Location.parseLock(lock) : null;
+        if (wanted) {
+            if (wanted.target.kind === "site") {
+                if (currentSiteId() !== wanted.target.siteId || currentMode() !== "live")
+                    engine.send({type: "select_site", id: wanted.target.siteId});
+            } else if (wanted.target.kind === "mosaic") {
+                var sel = engine.state.selection;
+                if (!sel || sel.sourceId !== wanted.sourceId || sel.target.kind !== "mosaic")
+                    engine.send({type: "select_source", id: wanted.sourceId});
+            }
+            if (!nav().locked) engine.send({type: "lock", enabled: true});
+            if (!nav().follow) engine.send({type: "follow", enabled: true});
         } else {
-            if (engine.state.site.locked) engine.send({type: "lock", enabled: false});
-            if (!engine.state.site.follow) engine.send({type: "follow", enabled: true});
+            if (nav().locked) engine.send({type: "lock", enabled: false});
+            if (!nav().follow) engine.send({type: "follow", enabled: true});
             if (hasView) engine.send({type: "view_center", lat: centerLat, lon: centerLon});
         }
+    }
+
+    function applyMetarConfig() {
+        metarEnabled = Metar.enabledFromConfig(config.values);
     }
 
     function initialize() {
         if (initialized || !engine.state || !ready) return;
         initialized = true;
         resolve();
+        adoptRememberedView();
         adoptRememberedLock();
         applyRadar();
+        applyMetarConfig();
         persist();
     }
 
@@ -487,7 +550,7 @@ QtObject {
     property Connections configEvents: Connections {
         target: session.config
         function onReadyChanged() { session.resolve(); session.initialize(); }
-        function onValuesChanged() { if (session.initialized) { session.resolve(); session.applyRadar(); } }
+        function onValuesChanged() { if (session.initialized) { session.resolve(); session.applyRadar(); session.applyMetarConfig(); } }
         function onLocationChanged() { if (!session.hasView) session.resolve(); if (session.initialized) session.applyRadar(); }
         function onTreatmentChanged() { session.applyTreatment(); }
         function onWeakFloorChanged() { session.applyTreatment(); }

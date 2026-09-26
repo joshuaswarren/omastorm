@@ -6,6 +6,7 @@ import Quickshell.Io
 import "Sites.js" as Sites
 import "Keys.js" as KeyMap
 import "Location.js" as Location
+import "Metar.js" as Metar
 
 Item {
     id: app
@@ -36,9 +37,9 @@ Item {
     readonly property var state: engine.state
     readonly property var scan: state ? state.frame : null
     // Every station, product, and source string on screen comes from the engine.
-    readonly property string siteId: state ? state.site.id : ""
-    readonly property string siteName: engine.site ? engine.site.name.toUpperCase() : ""
-    readonly property string sourceBadge: state ? state.source.toUpperCase() : ""
+    readonly property string siteId: engine.selectedSiteId
+    readonly property string siteName: engine.site ? engine.site.name.toUpperCase() : (engine.source && !engine.site ? engine.source.name.toUpperCase() : "")
+    readonly property string sourceBadge: state ? state.mode.toUpperCase() : ""
     // The timeline (DESIGN.md): the station's frames oldest
     // first with the sweep in progress last; the engine owns the position.
     readonly property var frames: state ? state.timeline : []
@@ -49,8 +50,8 @@ Item {
     // LIVE / ARCHIVED is the badge; a light beside it carries health.
     // Age under the product line is how stale the frame on screen is.
     // Prose is reserved for rejections, config mistakes, and notices.
-    readonly property string condition: state && state.source === "live" ? state.connection.status : ""
-    readonly property bool alert: condition !== "" && condition !== "ok"
+    readonly property string condition: state && state.mode === "live" ? state.connection.status : ""
+    readonly property bool alert: condition !== "" && condition !== "ok" && condition !== "idle"
     readonly property bool scanning: !!scan && scan.status === "partial" && !!scan.scanTime
     readonly property color conditionColor: condition === "stale" ? theme.yellow
         : condition === "loading" ? theme.accent
@@ -59,7 +60,7 @@ Item {
     // red when the feed is down; pulses while loading or a sweep is painting.
     readonly property color statusLightColor: {
         if (!state) return theme.foreground;
-        if (state.source === "archived") return theme.accent;
+        if (state.mode === "archived") return theme.accent;
         if (condition === "stale") return theme.yellow;
         if (condition === "unavailable" || condition === "offline") return theme.red;
         return theme.accent;
@@ -70,6 +71,16 @@ Item {
     readonly property int shownAge: !state || !scan || !scan.scanTime || !newestComplete ? -1
         : Math.max(0, state.connection.ageSeconds + Math.round((Date.parse(newestComplete.scanTime) - Date.parse(scan.scanTime)) / 1000))
     readonly property string ageText: condition && shownAge >= 0 ? ago(shownAge) : ""
+    // First sweep or COMP is still in flight: the map has tiles and no radar.
+    readonly property bool awaitingRadar: !!state && !map.radarReady
+        && (condition === "loading" || !!scan && !!scan.scanTime)
+    property bool loadingNotice: false
+    onAwaitingRadarChanged: if (!awaitingRadar) loadingNotice = false
+    Timer {
+        interval: 180
+        running: app.awaitingRadar
+        onTriggered: app.loadingNotice = true
+    }
     function ago(seconds) {
         var m = Math.floor(seconds / 60);
         if (m < 1) return "Now";
@@ -196,7 +207,7 @@ Item {
         function onKeysChanged() { app.applySettings(); }
         function onTreatmentChanged() { app.applySettings(); }
         function onWeakFloorChanged() { app.applySettings(); }
-        function onValuesChanged() { app.applySettings(); }
+        function onValuesChanged() { app.applySettings(); if (app.store.metarEnabled) app.requestMetars(); }
     }
     // The keyboard map (DESIGN.md, keyboard map as built): Keys.js lays the
     // `[keys]` table over the defaults, asking Qt whether each sequence
@@ -221,6 +232,51 @@ Item {
     }
     Component.onCompleted: applySettings()
     readonly property bool overlayOpen: locationPicker.open || sheet.open
+    property var metars: []
+    property var selectedMetar: null
+    function toggleMetar() {
+        if (!Metar.available(state, engine.site, engine.source)) return;
+        store.metarEnabled = !store.metarEnabled;
+    }
+    function requestMetars() {
+        if (!Metar.shouldQuery(state, store.metarEnabled, engine.site, engine.source)) {
+            if (!store.metarEnabled) selectedMetar = null;
+            else { metars = []; selectedMetar = null; }
+            return;
+        }
+        engine.send(Metar.command(engine.site, map.viewBbox(), config.values));
+    }
+    onSiteIdChanged: { metars = []; selectedMetar = null; requestMetars(); }
+    Connections {
+        target: store
+        function onMetarEnabledChanged() {
+            if (!app.store.metarEnabled) { app.selectedMetar = null; return; }
+            if (app.metars.length) return;
+            app.requestMetars();
+        }
+    }
+    Connections {
+        target: engine
+        function onMetarsReady(message) { app.metars = message.results || []; }
+        function onStateChanged() {
+            if (!Metar.available(app.state, engine.site, engine.source)) {
+                app.metars = [];
+                app.selectedMetar = null;
+            }
+        }
+    }
+    Timer {
+        interval: 600000
+        repeat: true
+        running: store.metarEnabled && Metar.available(state, engine.site, engine.source)
+        onTriggered: app.requestMetars()
+    }
+    Timer {
+        interval: 60000
+        repeat: true
+        running: store.metarEnabled && Metar.available(state, engine.site, engine.source)
+        onTriggered: { if (new Date().getUTCMinutes() <= 1) app.requestMetars(); }
+    }
     function run(action) {
         switch (action) {
         case "search": treatmentMenu.close(); locationPicker.show(""); break;
@@ -241,8 +297,9 @@ Item {
         case "newest": jump(true); break;
         case "pixels": case "glyphs": case "stipple": treatment = action.toUpperCase(); treatmentMenu.close(); break;
         case "weak": weakFloor = weakFloor === null ? configuredFloor : null; break;
+        case "aviation": toggleMetar(); break;
         case "help": treatmentMenu.close(); if (sheet.open) sheet.close(); else sheet.show(); break;
-        case "close": dismiss(); break;
+        case "close": if (app.selectedMetar) app.selectedMetar = null; else dismiss(); break;
         }
     }
     // Drives the keyboard map from outside for checks and captures:
@@ -258,22 +315,26 @@ Item {
             return JSON.stringify({sheet: sheet.open, menu: treatmentMenu.opened, treatment: app.treatment, weakFloor: app.weakFloor === null ? "off" : app.weakFloor, error: app.configError,
                                    span: Math.round(map.span * 10) / 10, lat: Math.round(map.centerLat * 1000) / 1000, lon: Math.round(map.centerLon * 1000) / 1000,
                                    locationSource: app.store.locationSource, needsLocation: app.store.needsLocation, locating: app.store.locating,
-                                   site: app.siteId, locked: app.locked, lockSource: app.store.lockSource, outsideCoverage: app.outsideCoverage});
+                                   site: app.siteId, source: engine.source ? engine.source.id : "", locked: app.locked, lockSource: app.store.lockSource, outsideCoverage: app.outsideCoverage});
         }
     }
     // Site navigation (DESIGN.md, location): the lock pins the radar against
     // hand-offs; `n` releases it and selects the nearest radar without moving
     // the camera. The site picker locks and centres on that station.
-    readonly property bool locked: state ? state.site.locked : false
-    readonly property bool following: state ? state.site.follow && !state.site.locked : false
+    readonly property bool locked: state && state.navigation ? state.navigation.locked : false
+    readonly property bool following: state && state.navigation ? state.navigation.follow && !state.navigation.locked : false
     readonly property var resetTarget: Location.resolveReset(Location.configCenter(config.values), config.location)
     readonly property bool outsideCoverage: {
-        var s = engine.site;
-        return !!(locked && s && Location.distanceKm(map.centerLat, map.centerLon, s.lat, s.lon) > map.coverageKm);
+        if (!locked) return false;
+        if (engine.site && engine.site.coverage)
+            return !Location.containsCoverage(engine.site.coverage, map.centerLat, map.centerLon, engine.site.lat, engine.site.lon);
+        if (engine.source && engine.source.coverage)
+            return !Location.containsCoverage(engine.source.coverage, map.centerLat, map.centerLon);
+        return false;
     }
     function toggleLock() {
-        if (!state || !siteId) return;
-        store.setLock(locked ? "" : siteId, !locked);
+        if (!state || !state.selection) return;
+        store.setLock(locked ? null : state.selection, !locked);
     }
     readonly property string placeLabel: {
         var t = app.resetTarget;
@@ -287,8 +348,6 @@ Item {
         var lat = map.centerLat, lon = map.centerLon;
         return Math.abs(lat).toFixed(2) + "° " + (lat < 0 ? "S" : "N") + "  " + Math.abs(lon).toFixed(2) + "° " + (lon < 0 ? "W" : "E");
     }
-    property string notice: ""
-    Timer { id: noticeTimer; interval: 3000; onTriggered: app.notice = "" }
     property string mapNotice: ""
     Timer { id: mapNoticeTimer; interval: Quickshell.env("OMASTORM_CAPTURE") ? 20000 : 3000; onTriggered: app.mapNotice = "" }
     function flashMap(text) {
@@ -298,7 +357,6 @@ Item {
     }
     function resetView() {
         store.resetView();
-        applyView();
     }
     function nearest() {
         var s = map.nearest();
@@ -307,7 +365,7 @@ Item {
     }
     function locateMe() {
         if (!store.hasView || store.needsLocation) return;
-        if (!state || state.source !== "live") {
+        if (!state || state.mode !== "live") {
             flashMap("Archived views never locate");
             return;
         }
@@ -316,7 +374,6 @@ Item {
     function choose(s) {
         if (!state || !s) return;
         store.chooseRadar(s.id, Number(s.lat), Number(s.lon), s.name || s.id);
-        applyView();
     }
     function acceptSearch(row) {
         if (!row) return;
@@ -324,11 +381,11 @@ Item {
             app.choose(row.site);
             return;
         }
+        if (row.kind === "mosaic") {
+            app.store.chooseMosaic(row.id, Number(row.lat), Number(row.lon), row.label || row.place || row.id);
+            return;
+        }
         app.store.setPlace(row.lat, row.lon, row.name || row.label || "");
-        app.applyView();
-        var name = row.name || row.label || "";
-        app.notice = name ? "LOCATION · " + name.toUpperCase() : "LOCATION · " + row.lat.toFixed(4) + ", " + row.lon.toFixed(4);
-        noticeTimer.restart();
     }
     // Drives the picker from outside for checks and captures:
     // quickshell ipc --pid <pid> call picker open tul
@@ -339,7 +396,7 @@ Item {
         function close(): void { locationPicker.close(); }
         function move(delta: int): void { locationPicker.move(delta); }
         function matches(): string {
-            return JSON.stringify(locationPicker.rows.map(r => r.kind === "site" ? r.site.id : (r.label || r.name)));
+            return JSON.stringify(locationPicker.rows.map(r => r.kind === "site" ? r.site.id : (r.kind === "mosaic" ? r.id : (r.label || r.name))));
         }
         function status(): string {
             return JSON.stringify({open: locationPicker.open, query: locationPicker.query, selected: locationPicker.selected, total: locationPicker.siteRanked.total, focused: locationPicker.fieldFocused});
@@ -354,7 +411,7 @@ Item {
         function move(delta: int): void { locationPicker.move(delta); }
         function go(lat: string, lon: string, name: string): void { locationPicker.go(Number(lat), Number(lon), name); }
         function matches(): string {
-            return JSON.stringify(locationPicker.rows.map(r => r.kind === "site" ? r.site.id : (r.where ? (r.name + ", " + r.where) : (r.label || r.name))));
+            return JSON.stringify(locationPicker.rows.map(r => r.kind === "site" ? r.site.id : (r.kind === "mosaic" ? r.id : (r.where ? (r.name + ", " + r.where) : (r.label || r.name)))));
         }
         function status(): string {
             return JSON.stringify({open: locationPicker.open, query: locationPicker.query, selected: locationPicker.selected, focused: locationPicker.fieldFocused, count: locationPicker.rows.length, error: locationPicker.coordError});
@@ -581,6 +638,11 @@ Item {
             RowLayout {
                 id: siteRow
                 Layout.fillWidth: true
+                // Fixed height: polar↔mosaic product/age changes must not
+                // resize the map (a source hand-off is not a layout event).
+                Layout.preferredHeight: 30
+                Layout.minimumHeight: 30
+                Layout.maximumHeight: 30
                 // MOCK: the station title is the radar control. Click it to
                 // pick a station; the padlock beside it pins that radar (not
                 // the map — the crosshair on the map is place-follow).
@@ -595,7 +657,7 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     contentItem: RowLayout {
                         spacing: 8
-                        LabelText { text: app.siteId || "—"; font.pixelSize: app.theme.baseSize + 7; font.bold: true }
+                        LabelText { text: app.siteId || (engine.source ? engine.source.id : "—"); font.pixelSize: app.theme.baseSize + 7; font.bold: true }
                         LabelText { text: app.siteName; visible: !win.compact; opacity: .65 }
                         Glyph { glyph: "chevron"; implicitWidth: 12; fade: .5 }
                     }
@@ -634,39 +696,46 @@ Item {
                 ColumnLayout {
                     id: productStack
                     spacing: 2
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: implicitWidth
                     Layout.alignment: Qt.AlignTop | Qt.AlignRight
                     RowLayout {
                         id: productLine
                         spacing: 8
-                        visible: !!app.scan
+                        Layout.fillWidth: true
                         LabelText {
-                            text: !app.scan ? "" : app.scan.productName.toUpperCase() + (app.scan.scanTime ? " / " + app.scan.elevationDeg.toFixed(1) + "°" : "")
+                            text: !app.scan ? "" : app.scan.productName.toUpperCase()
                         }
                         LabelText {
-                            text: "NOAA NEXRAD"
+                            id: tiltLabel
+                            // Reserve the tilt while a polar frame is loading.
+                            // Metadata appearing must not push the product name.
+                            visible: !!app.scan && app.scan.kind !== "mosaic"
+                            text: app.scan && app.scan.scanTime && app.scan.kind !== "mosaic"
+                                ? "/ " + app.scan.elevationDeg.toFixed(1) + "°" : "/ —°"
+                            opacity: app.scan && app.scan.scanTime ? 1 : 0
+                            Layout.minimumWidth: tiltMetrics.width
+                            Layout.preferredWidth: tiltMetrics.width
+                            Layout.maximumWidth: tiltMetrics.width
+                            TextMetrics { id: tiltMetrics; font: tiltLabel.font; text: "/ 00.0°" }
+                        }
+                        LabelText {
+                            text: !app.scan ? "" : (engine.source ? engine.source.attribution : (app.scan.kind === "mosaic" ? "" : "NOAA NEXRAD"))
                             font.letterSpacing: 1; opacity: .55
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                         }
                     }
                     LabelText {
                         id: metaLine
                         Layout.alignment: Qt.AlignRight
-                        visible: app.ageText !== ""
+                        Layout.minimumHeight: 12
                         text: app.ageText
                         color: app.alert && app.condition !== "loading" ? app.conditionColor : app.theme.foreground
-                        opacity: app.alert && app.condition !== "loading" ? 1 : .75
+                        opacity: app.ageText === "" ? 0 : (app.alert && app.condition !== "loading" ? 1 : .75)
                     }
                 }
-            }
-            // Rejections, config mistakes, and notices only — feed health is
-            // the light beside LIVE, not a prose status row.
-            LabelText {
-                Layout.fillWidth: true
-                Layout.topMargin: -4
-                text: engine.rejection || app.configError || store.persistError || app.notice || store.updateNotice
-                color: app.theme.accent
-                opacity: 1
-                visible: text !== ""
-                horizontalAlignment: Text.AlignRight
             }
             Rectangle {
                 id: mapFrame
@@ -684,7 +753,10 @@ Item {
                     texture: engine.texture
                     azimuthLut: engine.azimuthLut
                     siteId: app.siteId
+                    sourceId: engine.source ? engine.source.id : ""
                     sites: engine.sites
+                    coverage: engine.site && engine.site.coverage ? engine.site.coverage
+                        : (engine.source && engine.source.coverage ? engine.source.coverage : null)
                     tileRoot: "file://" + engine.runtime
                     theme: app.theme
                     treatment: app.treatment
@@ -692,6 +764,9 @@ Item {
                     radarOpacity: app.condition === "unavailable" ? .6 : 1
                     labelSize: win.compact ? 10 : 12
                     locked: app.locked
+                    metarMode: app.store.metarEnabled && Metar.available(app.state, engine.site, engine.source) && app.metars.length > 0
+                    metars: app.metars
+                    metarMark: Metar.markFromConfig(app.config.values) || "chip"
                     interactive: !app.store.needsLocation && !locationPicker.open
                     onNavigated: (lat, lon, spanKm) => app.store.userNavigated(lat, lon, spanKm)
                     // A settled pan hands the centre to the engine, which switches
@@ -707,14 +782,65 @@ Item {
                             return;
                         engine.send({type: "view_center", lat: lat, lon: lon});
                         app.store.rememberView(lat, lon, map.span);
+                        app.requestMetars();
                     }
                     onResetRequested: app.resetView()
                     Component.onCompleted: app.applyView()
                     // The map asks for tiles when its camera settles and the
                     // engine answers this window alone, tile by tile.
                     onTilesNeeded: (z, x0, y0, x1, y1) => engine.send({type: "tiles_needed", z: z, x0: x0, y0: y0, x1: x1, y1: y1})
+                    onMetarPicked: report => app.selectedMetar = report
                 }
                 Connections { target: engine; function onTileReady(tile) { map.tileReady(tile); } }
+                Rectangle {
+                    id: metarCard
+                    visible: !!app.selectedMetar
+                    // Bottom-right, 80% of the map, sitting above the OSM
+                    // credit so the scale bar and attribution stay clear.
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.rightMargin: 12
+                    anchors.bottomMargin: 36
+                    width: Math.round(parent.width * 0.8)
+                    height: metarColumn.implicitHeight + 16
+                    color: Qt.alpha(app.theme.background, .95)
+                    border.width: 1
+                    border.color: Qt.alpha(app.theme.foreground, .22)
+                    MouseArea { anchors.fill: parent }
+                    Column {
+                        id: metarColumn
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 8
+                        spacing: 4
+                        Row {
+                            spacing: 8
+                            Rectangle {
+                                width: 10; height: 10; radius: 5
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: Metar.color(app.selectedMetar ? app.selectedMetar.category : "") || app.theme.foreground
+                            }
+                            LabelText {
+                                text: (app.selectedMetar ? app.selectedMetar.name || app.selectedMetar.id : "")
+                                    + (Metar.label(app.selectedMetar ? app.selectedMetar.category : "") ? "  " + Metar.label(app.selectedMetar.category) : "")
+                                font.bold: true
+                            }
+                            Item { width: 8; height: 1 }
+                            LabelText {
+                                text: "NOAA/NWS AWC"
+                                opacity: .55
+                                font.pixelSize: 10
+                            }
+                        }
+                        LabelText {
+                            width: metarCard.width - 16
+                            wrapMode: Text.Wrap
+                            font.family: "monospace"
+                            text: app.selectedMetar ? app.selectedMetar.raw : ""
+                        }
+                    }
+                }
                 // Locate (DESIGN.md): map marker, top-left; north sits beside it.
                 Row {
                     id: mapTopLeft
@@ -725,7 +851,7 @@ Item {
                         id: locateChip
                         width: 26; height: 22
                         readonly property bool pending: app.store.locating && app.store.locateKind === "locate"
-                        readonly property bool canLocate: !!app.state && app.store.hasView && app.state.source === "live"
+                        readonly property bool canLocate: !!app.state && app.store.hasView && app.state.mode === "live"
                         color: pending ? app.theme.accent : locateArea.containsMouse && canLocate ? Qt.alpha(app.theme.accent, .18) : Qt.alpha(app.theme.background, .9)
                         border.width: 1; border.color: pending ? app.theme.accent : Qt.alpha(app.theme.foreground, .22)
                         visible: app.store.hasView
@@ -852,7 +978,38 @@ Item {
                     visible: !!app.scan
                     font.pixelSize: 10; opacity: .55
                 }
+                Rectangle {
+                    anchors.centerIn: parent
+                    visible: app.loadingNotice && app.awaitingRadar && !(map.error || engine.error)
+                    width: loadText.implicitWidth + 20
+                    height: 28
+                    color: Qt.alpha(app.theme.background, .88)
+                    border.width: 1
+                    border.color: Qt.alpha(app.theme.foreground, .22)
+                    z: 2
+                    LabelText {
+                        id: loadText
+                        anchors.centerIn: parent
+                        text: "Loading..."
+                        color: app.theme.accent
+                    }
+                }
                 LabelText { anchors.centerIn: parent; width: parent.width-24; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter; text: map.error || engine.error; visible: text.length > 0 }
+                // Rejections and update copy sit on the map. A layout row
+                // here used to grow the chrome and shift the stage whenever
+                // OPERA loaded, a place was accepted, or the feed rejected.
+                LabelText {
+                    anchors.top: parent.top
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.topMargin: 10
+                    width: Math.min(implicitWidth, parent.width - 80)
+                    wrapMode: Text.Wrap
+                    horizontalAlignment: Text.AlignHCenter
+                    text: engine.rejection || app.configError || store.persistError || store.updateNotice
+                    color: app.theme.accent
+                    visible: text !== ""
+                    z: 2
+                }
                 Rectangle {
                     id: mapToast
                     visible: app.mapNotice !== ""
@@ -872,15 +1029,21 @@ Item {
                     }
                 }
             }
-            // legend — colors for the map above
+            // legend — colors for the map above. Height is pinned so a
+            // polar↔OPERA scan replace (Repeater rebuild, or no frame over
+            // the ocean) cannot grow or shrink the map stage.
             ColumnLayout {
                 id: legend
                 Layout.fillWidth: true
+                Layout.preferredHeight: 22
+                Layout.minimumHeight: 22
+                Layout.maximumHeight: 22
                 spacing: 4
-                visible: !!app.scan
+                opacity: app.state && app.bands > 0 ? 1 : 0
                 Item {
                     Layout.fillWidth: true
-                    implicitHeight: legendRow.implicitHeight
+                    implicitHeight: 22
+                    height: 22
                     RowLayout {
                         id: legendRow
                         anchors.fill: parent; spacing: 0
@@ -926,9 +1089,15 @@ Item {
             }
             // Timestamp and frame index above the ticks; transport alongside.
             RowLayout {
+                id: playbackRow
                 Layout.fillWidth: true
+                // Empty timestamps and the first tick reserve the same space.
+                Layout.minimumHeight: 32
+                Layout.preferredHeight: 32
+                Layout.maximumHeight: 32
                 spacing: 12
-                visible: !!app.scan
+                opacity: app.state ? 1 : 0
+                enabled: !!app.state
                 RowLayout {
                     id: transport
                     Layout.alignment: Qt.AlignBottom
@@ -944,23 +1113,25 @@ Item {
                     spacing: 4
                     RowLayout {
                         Layout.fillWidth: true
+                        Layout.preferredHeight: 14
+                        Layout.minimumHeight: 14
+                        Layout.maximumHeight: 14
                         spacing: 8
                         LabelText {
                             id: stripStamp
                             Layout.fillWidth: true
-                            visible: !!app.scan && !!app.scan.scanTime
-                            text: app.scan ? app.stamp(app.scan.scanTime) : ""
+                            text: app.scan && app.scan.scanTime ? app.stamp(app.scan.scanTime) : ""
                             font.pixelSize: 10
-                            opacity: .65
+                            opacity: text !== "" ? .65 : 0
                             horizontalAlignment: Text.AlignLeft
                             elide: Text.ElideRight
                         }
                         LabelText {
-                            visible: !win.compact && app.frameIndex >= 0
+                            visible: !win.compact
                             horizontalAlignment: Text.AlignRight
-                            text: (app.frameIndex + 1) + " / " + app.frames.length
+                            text: app.frameIndex >= 0 ? ((app.frameIndex + 1) + " / " + app.frames.length) : ""
                             font.pixelSize: 10
-                            opacity: .65
+                            opacity: text !== "" ? .65 : 0
                         }
                     }
                     Item {
@@ -1069,6 +1240,8 @@ Item {
             theme: app.theme
             engine: engine
             sites: engine.sites
+            sources: engine.sources
+            selectedSourceId: engine.source ? engine.source.id : ""
             closeOnScrim: !app.store.needsLocation
             centerLat: map.centerLat
             centerLon: map.centerLon

@@ -64,11 +64,12 @@ Neither route adds coordinate overrides to config. `/` opens that search
 after onboarding. `m` jumps to the approximate location without typing.
 
 Resolve the radar independently: configured `locked_radar`, then a remembered
-UI lock, then the nearest station to the resolved center. A configured radar
+UI lock, then a covering source from the resolved center. A configured radar
 alone does not resolve a location. Coordinates never imply a lock. Choosing a
-station in search locks it and centres the map on that site. Choosing a city
-or coordinates unlocks and selects the nearest radar. `n` selects the
-nearest radar without moving the camera. A configured override still applies.
+station or mosaic source in search locks it and centres the map on it. Choosing
+a city or coordinates unlocks and selects a covering source. `n` resumes
+automatic covering-source selection without moving the camera. A configured
+override still applies.
 
 Restore remembered zoom, or the default zoom when none is valid. Keep the
 camera at the resolved location when frames arrive. Close and reopen preserve
@@ -89,6 +90,13 @@ center_lon = -79.97948
 treatment = "GLYPHS" # PIXELS, GLYPHS, or STIPPLE at launch; Glyphs when omitted
 weak_floor = 5       # dBZ; false draws every measured return
 
+[metar]
+show = false                         # ICAO chips on the map; omit or false is off
+pick = "nearest"                     # nearest to the radar, or "priority" (AWC tiers in view)
+count = 16                           # 1–16 chips; omit is 16. 8 or 4 shrinks the pool
+always_on_when_in_view = "KM19"      # quoted ICAO list; pinned first while on screen
+mark = "chip"                        # chip (filled category block), ink (ICAO in category color), pin (larger category marker)
+
 [keys]
 pan_left = "h Left"
 zoom_in = "+ ="
@@ -101,7 +109,8 @@ zoom_in = "+ ="
   bypass the location prompt. Panning still works and updates state; reopening
   returns to the configured center. Removing the pair resumes the remembered
   position. Zoom remains independent.
-- `locked_radar`: a station id from `hello.sites`. Report an invalid id in
+- `locked_radar`: a polar station id from `hello.sites`. It is not a mosaic
+  or provider setting. Report an invalid id in
   the status slot; do not silently substitute another locked station.
   A valid override wins over the remembered lock on launch. It never moves
   the map. Unlocking in the UI affects the session and remembered lock;
@@ -113,7 +122,7 @@ settings even when the sweep is outside the view. Show the selected station
 and lock, with "Use nearest radar" and "Go to selected radar" available when
 coverage is outside the view. Never relocate the camera or discard the lock
 silently. The lock control uses the theme yellow when the camera sits outside
-that radar's rings.
+that radar's coverage footprint, not its range rings.
 
 For agent-assisted installation, write coordinate overrides only when the
 user requests a fixed launch location. Ordinary installation leaves them
@@ -136,13 +145,41 @@ the machine's own state and weather files are not read unless
   toggles between off and this floor afterwards without writing the file.
   `OMASTORM_WEAK` (`off` or a number), set by the capture scripts, outranks
   it. Anything else is reported like a bad `treatment` and leaves the default.
+- `[metar] show`: optional. `true` seeds the METAR overlay on (ICAO chips
+  replace city names around the selected live NEXRAD radar). Omit or
+  `false` is off. US and Canada only; on OPERA Europe the overlay and the
+  `aviation` key are a no-op. The `aviation` key (`a`) toggles the
+  session without writing the file; an edit of this value re-seeds. A
+  value that is not a boolean is named in the status slot like a bad
+  `treatment`.
+- `[metar] pick`: optional. `"nearest"` (omit is this) is the 16 closest
+  stations to the selected radar. `"priority"` takes stations in the
+  current map view and ranks them by AWC stationinfo `priority` (1 is a
+  hub such as KBNA) then distance to the radar, so a major airport on
+  screen beats a closer small field. Anything else is named in the status
+  slot. The engine never reads this file; the UI sends `pick` and the view
+  box on `metar_query`.
+- `[metar] count`: optional. How many chips, 1 through 16. Omit is 16.
+  8 or 4 shrinks the pool. A non-integer or a number outside 1–16 is named
+  in the status slot.
+- `[metar] always_on_when_in_view`: optional. Quoted ICAO ids separated by
+  spaces (`"KM19"` or `"KM19 KMEM"`). Those stations take the first chip
+  slots whenever they are in the map view and have a current METAR, even
+  when `pick` is `"priority"`. A home field stays on screen instead of
+  being crowded out by hubs. Toml.js is the scalar subset, so this is a
+  string, not a TOML array. Bad tokens are named in the status slot.
+- `[metar] mark`: optional. `"chip"` (omit is this) is the filled
+  flight-category block Wes's screenshot used. `"ink"` colors the ICAO
+  letters with that category and drops the fill. `"pin"` leaves the ICAO
+  as theme chrome and paints a larger location marker in the category
+  color. Anything else is named in the status slot.
 - `[keys]`: one entry per action, laid over the defaults in `ui/Keys.js`:
   `search` (`/ s`), `nearest` (`n`), `lock` (`Shift+L`), `locate` (`m`,
   approximate location), `pan_left`
   `pan_down` `pan_up` `pan_right` (`h j k l` and the arrows), `zoom_in`
   (`+ =`), `zoom_out` (`-`), `reset` (`0`, the resolved location), `previous_frame` (`[`),
   `next_frame` (`]`), `play` (`Space`), `oldest` (`Home`), `newest` (`End`),
-  `pixels` `glyphs` `stipple` (`1 2 3`), `weak` (`w`), `help` (`?`), `close`
+  `pixels` `glyphs` `stipple` (`1 2 3`), `weak` (`w`), `aviation` (`a`), `help` (`?`), `close`
   (`Escape`).
   A value that is not a quoted string, a sequence Qt cannot parse, an
   unknown action, or a key another action already holds leaves that action
@@ -156,12 +193,22 @@ the machine's own state and weather files are not read unless
 
 `~/.local/state/omastorm/state.json` is written atomically (a temporary file
 renamed into place). It holds the last map centre, span in kilometres, the UI
-radar lock when one is set, and what is on screen right now:
+radar lock when one is set, and what is on screen right now. Protocol v2
+stores the lock as the exact selection identity; a leftover string lock is
+read as a NEXRAD site for one migration release and rewritten in the object
+form:
 
 ```json
-{"lat":30.332,"lon":-81.656,"span":210,"lock":"KJAX","name":"Jacksonville",
+{"lat":30.332,"lon":-81.656,"span":210,
+ "lock":{"sourceId":"nexrad","target":{"kind":"site","siteId":"KJAX"}},
+ "name":"Jacksonville",
  "site":"KJAX","scan":"2026-09-10T18:42:11Z","live":true}
 ```
+
+A mosaic lock is `{"sourceId":"fixture-mosaic","target":{"kind":"mosaic"}}`.
+The previous `"lock":"KJAX"` string is accepted on read, then written back as
+the object above. `locked_radar` in config.toml stays a polar site string;
+there is no provider setting or mosaic picker.
 
 - `lat`, `lon`, `span`, `lock`, `name`: the remembered view, read back at
   launch (above). Invalid fields are dropped; a missing file is no remembered
@@ -176,12 +223,12 @@ radar lock when one is set, and what is on screen right now:
   program and opens none. Absent until the engine has a station.
 
 A camera move (panning, locking, picking a place, picker's reset) writes the
-whole snapshot. A sweep only overlays the trio above onto whatever is on disk
-now — the camera and the lock keys are never touched on a sweep — so a sweep
-that arrives after a pan keeps the user's pan and adds the new
-`site` / `scan` / `live`. The window and the bar are separate processes on one
-file; the sweep overlay lets them coexist without either rewriting the
-other's camera.
+whole snapshot. A sweep or an engine reconnect only overlays the trio above
+onto whatever is on disk now — the camera and the lock keys are never
+touched — so a sweep that arrives after a pan keeps the user's pan and adds
+the new `site` / `scan` / `live`. The window and the bar are separate
+processes on one file; the overlay lets them coexist without either
+rewriting the other's camera.
 
 `OMASTORM_STATE` names another state file for checks. `OMASTORM_LOCATION`
 names another weather.json (`name`, `latitude`, `longitude`, written by the
