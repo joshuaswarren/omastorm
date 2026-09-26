@@ -523,13 +523,22 @@ QtObject {
 
     function initialize() {
         if (initialized || !engine.state || !ready) return;
+        // An engine restart is this process's reconnect, not a camera move:
+        // whoever panned last owns the camera on disk, and this process may
+        // not have moved since launch (the bar never does). The reconnect
+        // therefore overlays only the on-screen trio; writing the snapshot
+        // here would put this process's stale `lat` / `lon` / `span` back
+        // over the other client's pan. The first start still creates the
+        // file with the view this process resolved.
+        var reconnect = hasView;
         initialized = true;
         resolve();
         adoptRememberedView();
         adoptRememberedLock();
         applyRadar();
         applyMetarConfig();
-        persist();
+        if (reconnect) remembered.overlay(shownSite, shownScan, shownLive);
+        else persist();
     }
 
     function applyTreatment() {
