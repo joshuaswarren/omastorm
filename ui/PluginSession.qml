@@ -324,7 +324,7 @@ QtObject {
     readonly property string shownSite: engine.selectedSiteId
     readonly property string shownScan: engine.state && engine.state.frame ? engine.state.frame.scanTime || "" : ""
     readonly property bool shownLive: {
-        if (!engine.state || !engine.state.frame || engine.state.source !== "live") return false;
+        if (!engine.state || !engine.state.frame || engine.state.mode !== "live") return false;
         var t = engine.state.timeline || [];
         return t.length > 0 && t[t.length - 1].id === engine.state.frame.id;
     }
