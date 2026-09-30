@@ -124,8 +124,10 @@ forecasts or flight guidance.
 
 The overlay is off by default and works with live NEXRAD radar in the U.S. and
 Canada. It is unavailable on the European OPERA mosaic. To start with it on,
-set `[metar] show = true` in your configuration. You can also choose how many
-airports appear and how they are selected; see [configuration](docs/configuration.md#display-and-keyboard-preferences).
+set `[metar] show = true` in your configuration. With no config file, or when
+`[metar] mark` is omitted, each airport is a pin. The pictures below use the
+filled chip (`mark = "chip"`). You can also choose how many airports appear
+and how they are selected; see [configuration](docs/configuration.md#display-and-keyboard-preferences).
 
 <p align="center">
   <img src="docs/media/readme/aviation-window.png" width="65%" alt="Omastorm window with color-coded airport codes and a raw METAR for KDAN">
@@ -173,8 +175,14 @@ map. It is not a new row of chrome.
 
 Selecting a radar loads its recent scans for playback. NEXRAD history grows
 toward **60 frames / two hours**;
-OPERA retains up to **12 mosaic frames**. Older scans drop out. Space loops
-what is available; `[` `]` steps; Home and End jump.
+OPERA retains up to **12 mosaic frames**. Older scans drop out.
+
+Space and the Play button loop from the selected completed frame through the
+newest completed scan, returning to the selection each time. Starting from
+the newest completed frame or a sweep still painting loops the full history;
+Home then Play also selects the full history. Space or the button pauses
+while playing, and the next Play captures the current selection as its start.
+`[` `]` steps; Home and End jump to the oldest or newest frame.
 
 NOAA publishes NEXRAD Level II via the [Open Data program on AWS](https://registry.opendata.aws/noaa-nexrad/).
 A full volume takes about four to seven minutes (faster in severe weather,
@@ -213,7 +221,7 @@ Chrome follows the Omarchy theme. Radar color comes from the measured reflectivi
 | `n` | Follow the covering radar (camera stays) |
 | `Shift+L` | Lock the radar |
 | `m` | My location |
-| Space | Play / pause the loop |
+| Space | Loop from the selected frame / pause |
 | `[` `]` | Step a frame |
 | Home / End | Oldest or newest frame |
 | `1` `2` `3` | Pixels, Glyphs, Stipple |
@@ -341,9 +349,10 @@ Thanks to these people
       <td align="center" valign="top" width="14.28%"><a href="http://mrcobas.com"><img src="https://avatars.githubusercontent.com/u/41881817?v=4?s=100" width="100px;" alt="javi"/><br /><sub><b>javi</b></sub></a><br /><a href="https://github.com/wesleygrimes/omastorm/commits?author=mrcobas" title="Tests">⚠️</a> <a href="https://github.com/wesleygrimes/omastorm/pulls?q=is%3Apr+reviewed-by%3Amrcobas" title="Reviewed Pull Requests">👀</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://ryrob.es/"><img src="https://avatars.githubusercontent.com/u/757387?v=4?s=100" width="100px;" alt="Ryan Robitaille"/><br /><sub><b>Ryan Robitaille</b></sub></a><br /><a href="https://github.com/wesleygrimes/omastorm/commits?author=ryrobes" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/gw7523"><img src="https://avatars.githubusercontent.com/u/199144018?v=4?s=100" width="100px;" alt="gw7523"/><br /><sub><b>gw7523</b></sub></a><br /><a href="https://github.com/wesleygrimes/omastorm/commits?author=gw7523" title="Code">💻</a> <a href="https://github.com/wesleygrimes/omastorm/issues?q=author%3Agw7523" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Yani3rt"><img src="https://avatars.githubusercontent.com/u/170105839?v=4?s=100" width="100px;" alt="Yaniert Pascual"/><br /><sub><b>Yaniert Pascual</b></sub></a><br /><a href="#userTesting-Yani3rt" title="User Testing">📓</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Yani3rt"><img src="https://avatars.githubusercontent.com/u/170105839?v=4?s=100" width="100px;" alt="Yaniert Pascual"/><br /><sub><b>Yaniert Pascual</b></sub></a><br /><a href="#userTesting-Yani3rt" title="User Testing">📓</a> <a href="https://github.com/wesleygrimes/omastorm/commits?author=Yani3rt" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://mikeyockey.com"><img src="https://avatars.githubusercontent.com/u/306343?v=4?s=100" width="100px;" alt="Michael Yockey"/><br /><sub><b>Michael Yockey</b></sub></a><br /><a href="https://github.com/wesleygrimes/omastorm/issues?q=author%3Ayock" title="Bug reports">🐛</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/fearjet44"><img src="https://avatars.githubusercontent.com/u/314382095?v=4?s=100" width="100px;" alt="Justin Hagemeier"/><br /><sub><b>Justin Hagemeier</b></sub></a><br /><a href="https://github.com/wesleygrimes/omastorm/commits?author=fearjet44" title="Code">💻</a> <a href="https://github.com/wesleygrimes/omastorm/commits?author=fearjet44" title="Documentation">📖</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Noah-Brown"><img src="https://avatars.githubusercontent.com/u/14036855?v=4?s=100" width="100px;" alt="Noah-Brown"/><br /><sub><b>Noah-Brown</b></sub></a><br /><a href="https://github.com/wesleygrimes/omastorm/commits?author=Noah-Brown" title="Code">💻</a></td>
     </tr>
   </tbody>
 </table>
