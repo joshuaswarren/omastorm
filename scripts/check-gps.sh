@@ -18,6 +18,11 @@ mkdir -p "$check_dir/bin"
 # waits, so the check drives the position by appending to the file.
 cat > "$check_dir/bin/gpspipe" <<EOF
 #!/bin/sh
+{
+  printf 'argv:'
+  printf ' <%s>' "\$@"
+  printf '\ncwd: %s\nPATH: %s\n' "\$(pwd)" "\$PATH"
+} >> "$check_dir/gpspipe.log"
 while :; do
   if [ -s "$check_dir/fixes.txt" ]; then
     while IFS= read -r line; do printf '%s\n' "\$line"; sleep 1; done < "$check_dir/fixes.txt"
@@ -37,7 +42,15 @@ pid=$!
 trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
 call() { quickshell ipc --pid "$pid" call keys "$@"; }
 field() { call field "$1"; }
-fail() { printf '%s\n' "$@" >&2; cat "$check_dir/log" >&2; exit 1; }
+fail() {
+  printf '%s\n' "$@" >&2
+  cat "$check_dir/log" >&2
+  printf '\n--- gpspipe stand-in ---\n' >&2
+  if [[ -s "$check_dir/gpspipe.log" ]]; then cat "$check_dir/gpspipe.log" >&2; else echo 'not invoked' >&2; fi
+  printf '\n--- Config.qml GPS process ---\n' >&2
+  call status >&2 || true
+  exit 1
+}
 expect() { [[ "$3" == "$2" ]] || fail "$1" "Expected: $2" "Actual:   $3"; }
 near() { awk -v a="$1" -v b="$2" 'BEGIN { d = a - b; exit !(d < .002 && d > -.002) }'; }
 until_field() { # name, wanted
