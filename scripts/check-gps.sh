@@ -14,26 +14,28 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 check_dir="$PWD/target/check-gps"
 mkdir -p "$check_dir/bin"
-# The stand-in replays whatever fixes.txt holds, one line a second, then
-# waits, so the check drives the position by appending to the file.
+# A FIFO stays open between fixes, so the gpspipe stand-in behaves like a
+# live stream and each appended TPV is delivered exactly once.
+rm -f "$check_dir/fixes.txt" "$check_dir/fixes.fifo" "$check_dir/state.json"
+mkfifo "$check_dir/fixes.fifo"
 cat > "$check_dir/bin/gpspipe" <<EOF
 #!/bin/sh
+exec 2>>"$check_dir/gpspipe.err"
+trap 'status=\$?; printf "%s exit:%s\n" "\$(date -u +%s.%N)" "\$status" >> "$check_dir/gpspipe.log"' EXIT
 {
-  printf 'argv:'
+  printf '%s start pid=%s argv:' "\$(date -u +%s.%N)" "\$\$"
   printf ' <%s>' "\$@"
   printf '\ncwd: %s\nPATH: %s\n' "\$(pwd)" "\$PATH"
 } >> "$check_dir/gpspipe.log"
 while :; do
-  if [ -s "$check_dir/fixes.txt" ]; then
-    while IFS= read -r line; do printf '%s\n' "\$line"; sleep 1; done < "$check_dir/fixes.txt"
-    : > "$check_dir/fixes.txt"
-  fi
-  sleep .5
+  while IFS= read -r line; do
+    printf '%s line: %s\n' "\$(date -u +%s.%N)" "\$line" >> "$check_dir/gpspipe.log"
+    printf '%s\n' "\$line"
+    sleep 1
+  done < "$check_dir/fixes.fifo"
 done
 EOF
 chmod +x "$check_dir/bin/gpspipe"
-: > "$check_dir/fixes.txt"
-rm -f "$check_dir/state.json"
 printf '{\n  "name": "Stokesdale",\n  "latitude": 36.23708,\n  "longitude": -79.97948\n}\n' > "$check_dir/weather.json"
 printf 'gpsd = true\n' > "$check_dir/config.toml"
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
@@ -47,7 +49,7 @@ fail() {
   cat "$check_dir/log" >&2
   printf '\n--- gpspipe stand-in ---\n' >&2
   if [[ -s "$check_dir/gpspipe.log" ]]; then cat "$check_dir/gpspipe.log" >&2; else echo 'not invoked' >&2; fi
-  printf '\n--- Config.qml GPS process ---\n' >&2
+  if [[ -s "$check_dir/gpspipe.err" ]]; then printf '\n--- gpspipe stderr ---\n' >&2; cat "$check_dir/gpspipe.err" >&2; fi
   call status >&2 || true
   exit 1
 }
@@ -57,8 +59,8 @@ until_field() { # name, wanted
   for _ in {1..150}; do [[ $(field "$1") == "$2" ]] && return; sleep .1; done
   fail "$1 never became $2: $(call status)"
 }
-fix() { printf '{"class":"TPV","mode":3,"lat":%s,"lon":%s}\n' "$1" "$2" >> "$check_dir/fixes.txt"; }
-nofix() { printf '{"class":"TPV","mode":1}\n' >> "$check_dir/fixes.txt"; }
+fix() { printf '{"class":"TPV","mode":3,"lat":%s,"lon":%s}\n' "$1" "$2" > "$check_dir/fixes.fifo"; }
+nofix() { printf '{"class":"TPV","mode":1}\n' > "$check_dir/fixes.fifo"; }
 for _ in {1..100}; do call status > /dev/null 2>&1 && break; sleep .1; done
 call status > /dev/null || fail "The window's keys IPC never answered"
 
