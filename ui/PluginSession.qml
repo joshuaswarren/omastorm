@@ -305,7 +305,7 @@ QtObject {
         }
     }
 
-// The window and the bar popover are separate processes on one engine and
+    // The window and the bar popover are separate processes on one engine and
     // one state.json. Each keeps its own lock intent and re-sends it when the
     // engine comes back, so a restart used to jump to whichever client pushed
     // last, often the bar's launch-time lock. The file is the shared answer:
