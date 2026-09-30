@@ -321,7 +321,7 @@ QtObject {
     // What the engine shows now, for the view export (docs/configuration.md):
     // the station, the frame's scan time, and whether that frame is the
     // live head — the newest of a live timeline.
-    readonly property string shownSite: engine.state ? engine.state.site.id : ""
+    readonly property string shownSite: engine.selectedSiteId
     readonly property string shownScan: engine.state && engine.state.frame ? engine.state.frame.scanTime || "" : ""
     readonly property bool shownLive: {
         if (!engine.state || !engine.state.frame || engine.state.source !== "live") return false;
@@ -335,7 +335,7 @@ QtObject {
     // and the bar reading them later must see what the user actually
     // panned to. `Remembered.overlay` dedupes equal trios, so this is also
     // a no-op when the bar's process happens to see the same broadcast.
-    onShownKeyChanged: if (initialized && hasView) remembered.overlay(shownSite, shownScan, shownLive)
+    onShownKeyChanged: if (initialized && hasView && shownSite !== "") remembered.overlay(shownSite, shownScan, shownLive)
 
     // Same rule as the lock: state.json is the shared camera. A client that
     // still has an older place in memory (a city search, then mise restart)
@@ -537,8 +537,9 @@ QtObject {
         adoptRememberedLock();
         applyRadar();
         applyMetarConfig();
-        if (reconnect) remembered.overlay(shownSite, shownScan, shownLive);
-        else persist();
+        if (reconnect) {
+            if (shownSite !== "") remembered.overlay(shownSite, shownScan, shownLive);
+        } else persist();
     }
 
     function applyTreatment() {
