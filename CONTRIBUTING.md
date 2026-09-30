@@ -1,8 +1,9 @@
 # Contributing
 
 Report bugs and propose work in [GitHub issues](https://github.com/wesleygrimes/omastorm/issues).
-Track pending work in issues and projects; discuss new features there before
-implementation.
+Every pull request requires an issue approved by a maintainer before the PR is
+opened. This applies to bug fixes and feature requests, including draft PRs
+and automated PRs.
 
 ## Issues
 
@@ -17,8 +18,54 @@ covering the failure, not a single line. If the engine never installed, attach
 `bootstrap.log` from the same directory too. Paths are in the
 [README](README.md#troubleshooting).
 
-For a feature, open an issue first: what should change on screen, why it belongs
+For a feature, use the
+[feature request template](https://github.com/wesleygrimes/omastorm/issues/new?template=feature-request.md): what should change on screen, why it belongs
 in this app, and how it fits [DESIGN.md](DESIGN.md). Keep the feature set small.
+
+## Issue approval
+
+1. Open an issue using the bug report or feature request template.
+2. Agree on the scope and acceptance criteria with a maintainer. Wait for them
+   to apply the `approved` label before opening a PR.
+3. Link the approved issue in the PR body and keep the change within its agreed
+   scope. Use `Closes #123` if merging should close the issue.
+
+Issues have exactly one class: `bug` for a bug fix or `enhancement` for a feature
+request. Other labels can help triage, but do not grant approval. Changes to
+docs, tests, tooling, and dependencies still need an issue describing the bug
+they fix or the improvement they propose.
+
+Maintainers apply `approved` once the scope is settled. Approval means the work
+is welcome for review; it does not guarantee the PR will be merged. Discuss
+scope changes on the issue before expanding the PR.
+
+Maintainers enforce this policy during review and may close PRs opened without
+prior issue approval or outside the approved scope. PRs must also pass the
+required `CI` check and receive maintainer review before merging.
+
+## Labels
+
+Use the same labels on issues and PRs. Every issue has exactly one of `bug`
+or `enhancement`; apply the corresponding type to its PR for release notes.
+Add other labels only when they help someone decide what to do next.
+
+| Label | Use |
+| --- | --- |
+| `bug` | Existing behavior is broken. |
+| `enhancement` | New capability or improvement. |
+| `documentation` | Docs work; supplement the issue or PR type. |
+| `approved` | A maintainer agreed to the issue scope before implementation. |
+| `needs-author` | Waiting for information or changes from the author. |
+| `blocked` | Waiting on another issue or an external dependency. |
+| `help wanted` | Approved work available for a contributor to pick up. |
+| `good first issue` | Approved, small, scoped work suitable for a newcomer. |
+| `duplicate` | Already tracked elsewhere; link the original when closing. |
+| `wontfix` | Outside scope or declined; explain the decision when closing. |
+
+`approved` applies to issues and does not replace PR review. Remove
+`needs-author` or `blocked` when the wait ends. Use GitHub review requests
+to indicate that a PR needs review. Priority, component, and release labels
+are not part of this set.
 
 ## Develop
 
@@ -89,19 +136,67 @@ under `review/` for visual review; those stay out of git. README stills are
 `docs/media/readme/` (`bash scripts/capture-readme.sh`). Include review
 captures with a rendering change.
 
+Capture scripts remove their temporary inputs, caches, and raw demo frames on
+exit, including failures and handled signals. Final images and videos remain in
+`review/` and `docs/media/`. Register cleanup immediately after `mktemp`, keep
+helper directories inside the same scratch tree, and stop only processes owned
+by that capture. Build outputs, fixtures, and the shared daemon are preserved.
+
 Honor [DESIGN.md](DESIGN.md): actual scan times, no forecasts, chrome from the
 Omarchy theme, radar color only from `frame.palette`.
 
 ## Verify and submit
 
-Branch from `main`. One change per pull request. Run `mise check` before every
-commit; it uses scratch daemons and leaves the shared daemon alone. Cargo runs
-first, then the Rust tests run alongside the UI checks, which proceed in two
-lanes. Scratch and logs live under `target/check/`, never `/tmp`; the daemons
-and runtime files go on every exit, and the logs stay until the next run.
-The checks read `target/debug/`, so leave `CARGO_TARGET_DIR` unset. Engine
-builds CI lints, tests, and packages both Linux architectures; GPU and QML
-checks still run locally. A pull request is ready when `mise check` passes.
+Branch from `main`. One change per pull request. During iteration, run the
+focused checks that cover the change:
+
+| Change | Command |
+| --- | --- |
+| Engine logic, decoding, storage | `mise check-engine` |
+| Wire output, commands, daemon lifecycle | `mise check-protocol` |
+| QML, launcher, installer, UI integration | `mise check-ui` |
+| Shader sampling, camera, rendering | `mise check-rendering` |
+
+Focused checks support iteration and commits; they do not establish PR readiness.
+Run `mise check` before marking a PR ready, plus the rendering checks and captures
+below when applicable. The complete applicable suite gates readiness.
+
+Checks use scratch daemons and leave the shared daemon alone. Cargo builds first;
+Rust tests can overlap with UI work, but UI groups run sequentially to avoid
+competing Quickshell/OpenGL harnesses. Concurrent check runners in the same
+checkout are refused before touching scratch files. Scratch and logs live under
+`target/check/`; runtime files are removed on exit, logs remain until the next
+run. `target/check/logs/timings.tsv` records step durations and total wall time.
+Step times overlap and should not be summed to infer wall time. The checks read
+`target/debug/`, so leave `CARGO_TARGET_DIR` unset. CI runs on pull requests and pushes to `main` (avoiding duplicate branch/PR
+runs), plus engine tags and manual runs. It selects jobs from the complete change
+diff. Engine changes run native tests
+and release builds on both Linux architectures, with formatting and Clippy once,
+plus UI integration. UI-only changes skip Rust builds and tests and run against
+the verified published engine pin. When engine and UI protocol versions match,
+engine changes run UI checks against the source-built candidate; differing
+versions keep UI checks on the pin and validate the candidate separately.
+Version equality declares compatibility; UI integration checks test behavior.
+Playback UI tests replay supplied frames and record emitted controls; they do
+not assert frame order or loop policy. Those regressions live in the engine's
+Rust tests, so an older compatible pin does not need unreleased engine behavior.
+
+Installer-only changes run ShellCheck and focused installer/launcher checks.
+Pin changes verify published checksums for both architectures and run UI checks.
+Release-tool changes exercise tooling regressions, native builds, binary smoke
+tests, and packaging without Rust lint/unit tests. Docs, branding, and
+site-only changes get whitespace and changed-JSON validation. Mixed changes run
+the union of their groups. CI/toolchain changes and unknown paths run everything,
+as do engine tags and manual workflow runs. Shell changes also run ShellCheck.
+The selected groups appear in the workflow summary.
+
+UI CI runs in an Arch container with Qt Quick's OpenGL RHI and Mesa rendering;
+it reuses verified or source-built binaries without compiling Rust. This covers
+headless integration; desktop GPU rendering tests and review captures remain
+required locally for shader, sampling, or camera changes. The final `CI` job
+requires every selected job to pass, including jobs that fail to start. Configure
+branch protection to require that single check. Report required checks that could
+not run explicitly.
 
 For shader, sampling, or camera changes, also run `mise check --gpu` and
 `bash scripts/capture-review.sh`, inspect the images in `review/`, and include
@@ -111,7 +206,8 @@ tile, or grid shaders with `bash scripts/build-shader.sh` and commit their `.qsb
 The GPU checks need a desktop OpenGL context; software Qt Quick is unsupported.
 If the environment cannot run a required check, report that explicitly.
 
-Open a pull request linking the issue. Keep commits small. Commit messages and
+Open a pull request linking the previously approved issue as described above.
+Keep commits small. Commit messages and
 pull request titles use
 [Angular conventional commits](https://www.conventionalcommits.org/en/v1.0.0/#summary):
 

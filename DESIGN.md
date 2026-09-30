@@ -43,7 +43,7 @@ the ids and comments in `ui/RadarWindow.qml`.
 | **locate chip** | Map marker, top-left of the map; jump to the approximate location |
 | **follow chip** | GPS crosshair beside it while `gpsd = true`; pause / resume follow, `NO FIX` when the receiver is silent |
 | **help chip** | Keys / `?` on the map |
-| **metar chips** | Optional. ICAO labels with FAA flight-category color in place of city names, around the selected live NEXRAD radar (US and Canada; OPERA Europe is a no-op). Off until toggled. Default is the nearest stations (at most 16). Optional AWC-priority pick uses the current map view so hubs outrank closer small fields; `count` shrinks the pool; `always_on_when_in_view` pins a home field that is on screen. A chip at the selected radar (KLIT next to KLZK) sits beside the site tag. Optional `mark`: filled category block (`chip`), ICAO letters in category color (`ink`), or a larger category-colored location (`pin`). Click shows the raw METAR on a **metar card** over the map, 80% width, bottom-right, above the OSM credit, so the scale bar stays clear. |
+| **metar chips** | Optional. ICAO labels with FAA flight-category color in place of city names, around the selected live NEXRAD radar (US and Canada; OPERA Europe is a no-op). Off until toggled. Default is the nearest stations (at most 16). Optional AWC-priority pick uses the current map view so hubs outrank closer small fields; `count` shrinks the pool; `always_on_when_in_view` pins a home field that is on screen. A chip at the selected radar (KLIT next to KLZK) sits beside the site tag. Optional `mark`: a larger category-colored location (`pin`, the default when omitted or when there is no config file), a filled category block (`chip`), or ICAO letters in category color (`ink`). Click shows the raw METAR on a **metar card** over the map, 80% width, bottom-right, above the OSM credit, so the scale bar stays clear. |
 | **scale bar** | Ground distance under the map, left; locale picks km or mi; label updates with zoom |
 | **legend** | dBZ scale directly under the map |
 | **transport** | Playback buttons |
@@ -54,6 +54,13 @@ the ids and comments in `ui/RadarWindow.qml`.
 **Bottom chrome order.** Map stage, then legend, then transport + tick
 strip, with the strip stamp left-aligned and frame index right-aligned
 on one row above the ticks. Playback buttons align with the track at the bottom.
+
+**Playback.** Space and the Play button start at the selected completed scan,
+play through the newest completed scan, and wrap back to the selection.
+Starting on the newest scan or a sweep still painting loops the full history;
+Home then Play also chooses the full history. Pause keeps the current frame,
+and playing again captures a new start. If the start leaves the catalog,
+continue from the oldest available completed scan.
 
 **Product stack.** Compact product line (name, then the active source's
 attribution). The meta
