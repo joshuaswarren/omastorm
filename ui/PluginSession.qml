@@ -16,6 +16,7 @@ QtObject {
     property Theme theme: Theme {}
     property bool windowOpen: false
     property bool initialized: false
+    property bool hasInitialized: false
     property string treatment: Quickshell.env("OMASTORM_STYLE") || "GLYPHS"
     // Session aviation overlay; `[metar] show` seeds it, `a` toggles it,
     // neither writes config.toml.
@@ -530,7 +531,8 @@ QtObject {
         // here would put this process's stale `lat` / `lon` / `span` back
         // over the other client's pan. The first start still creates the
         // file with the view this process resolved.
-        var reconnect = hasView;
+        var reconnect = hasInitialized;
+        hasInitialized = true;
         initialized = true;
         resolve();
         adoptRememberedView();
