@@ -20,16 +20,8 @@ rm -f "$check_dir/fixes.txt" "$check_dir/fixes.fifo" "$check_dir/state.json"
 mkfifo "$check_dir/fixes.fifo"
 cat > "$check_dir/bin/gpspipe" <<EOF
 #!/bin/sh
-exec 2>>"$check_dir/gpspipe.err"
-trap 'status=\$?; printf "%s exit:%s\n" "\$(date -u +%s.%N)" "\$status" >> "$check_dir/gpspipe.log"' EXIT
-{
-  printf '%s start pid=%s argv:' "\$(date -u +%s.%N)" "\$\$"
-  printf ' <%s>' "\$@"
-  printf '\ncwd: %s\nPATH: %s\n' "\$(pwd)" "\$PATH"
-} >> "$check_dir/gpspipe.log"
 while :; do
   while IFS= read -r line; do
-    printf '%s line: %s\n' "\$(date -u +%s.%N)" "\$line" >> "$check_dir/gpspipe.log"
     printf '%s\n' "\$line"
     sleep 1
   done < "$check_dir/fixes.fifo"
@@ -47,9 +39,6 @@ field() { call field "$1"; }
 fail() {
   printf '%s\n' "$@" >&2
   cat "$check_dir/log" >&2
-  printf '\n--- gpspipe stand-in ---\n' >&2
-  if [[ -s "$check_dir/gpspipe.log" ]]; then cat "$check_dir/gpspipe.log" >&2; else echo 'not invoked' >&2; fi
-  if [[ -s "$check_dir/gpspipe.err" ]]; then printf '\n--- gpspipe stderr ---\n' >&2; cat "$check_dir/gpspipe.err" >&2; fi
   call status >&2 || true
   exit 1
 }
