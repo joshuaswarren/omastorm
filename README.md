@@ -149,3 +149,7 @@ bash scripts/setup-fixture.sh
 bash scripts/cargo.sh build --locked
 bash run.sh
 ```
+
+## Contributors
+
+Everyone credited so far: [CONTRIBUTORS.md](CONTRIBUTORS.md).
